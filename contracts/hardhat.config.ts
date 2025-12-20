@@ -1,12 +1,22 @@
-import { HardhatUserConfig } from "hardhat/config";
-import "@nomicfoundation/hardhat-ethers";
-import "@nomicfoundation/hardhat-network-helpers";
+import { defineConfig } from "hardhat/config";
+import hardhatMocha from "@nomicfoundation/hardhat-mocha";
+import hardhatEthers from "@nomicfoundation/hardhat-ethers";
 import * as dotenv from "dotenv";
 
 dotenv.config();
 
-const config: HardhatUserConfig = {
+export default defineConfig({
+  plugins: [hardhatMocha, hardhatEthers],
+
   solidity: "0.8.24",
+
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts",
+  },
+
   networks: {
     arc_testnet: {
       type: "http",
@@ -15,6 +25,6 @@ const config: HardhatUserConfig = {
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },
   },
-};
 
-export default config;
+  test: { mocha: { timeout: 60_000 } },
+});
