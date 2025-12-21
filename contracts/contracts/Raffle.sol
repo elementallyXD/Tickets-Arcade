@@ -192,6 +192,12 @@ contract Raffle {
         _;
     }
 
+    /// @dev Restricts to factory, creator, or keeper
+    modifier onlyOperatorOrFactory() {
+        if (msg.sender != factory && msg.sender != creator && msg.sender != keeper) revert Unauthorized();
+        _;
+    }
+
     /// @dev Prevents reentrancy attacks
     modifier nonReentrant() {
         if (_locked) revert ReentrancyGuard();
@@ -340,9 +346,9 @@ contract Raffle {
         }
     }
 
-    /// @notice Close the raffle. Permissionless once conditions are met.
+    /// @notice Close the raffle. Only operator or factory once conditions are met.
     /// @dev Conditions: endTime passed OR all tickets sold
-    function close() external {
+    function close() external onlyOperatorOrFactory {
         _close();
     }
 

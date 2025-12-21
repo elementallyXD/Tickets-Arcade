@@ -1,11 +1,11 @@
 import { expect } from "chai";
 import { network } from "hardhat";
-import type { MockRngContract, MockUSDCContract, RaffleContract } from "./helpers/types.js";
+import type { DrandRandomnessProviderContract, MockUSDCContract, RaffleContract } from "./helpers/types.js";
 
 describe("Ticket Arcade - Raffle E2E flow", function () {
   it("closes, requests randomness, fulfills, finalizes, and pays winner + fee", async function () {
     const { ethers } = await network.connect();
-    const [, alice, bob, feeRecipient] = await ethers.getSigners();
+    const [oracle, alice, bob, feeRecipient] = await ethers.getSigners();
 
     // Deploy MockUSDC
     const MockUSDC = await ethers.getContractFactory("MockUSDC");
@@ -13,9 +13,9 @@ describe("Ticket Arcade - Raffle E2E flow", function () {
     await usdc.waitForDeployment();
     const usdcAddr = await usdc.getAddress();
 
-    // Deploy MockRandomnessProvider
-    const MockRng = await ethers.getContractFactory("MockRandomnessProvider");
-    const rng = (await MockRng.deploy()) as unknown as MockRngContract;
+    // Deploy Drand randomness adapter
+    const Drand = await ethers.getContractFactory("DrandRandomnessProvider");
+    const rng = (await Drand.deploy(oracle.address)) as unknown as DrandRandomnessProviderContract;
     await rng.waitForDeployment();
     const rngAddr = await rng.getAddress();
 
@@ -79,7 +79,7 @@ describe("Ticket Arcade - Raffle E2E flow", function () {
     // Use randomness = 3 => winningIndex=3 => belongs to Bob (3..4)
     const randomness = 3n;
 
-    await rng.fulfill(reqId, randomness);
+    await rng.deliverRandomness(reqId, randomness, "0x");
 
     expect(await raffle.randomness()).to.equal(randomness);
     expect(await raffle.winningIndex()).to.equal(3n);
