@@ -1,0 +1,111 @@
+
+name: "CodeQL Advanced"
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  schedule:
+    - cron: "39 6 * * 5"
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+          - language: rust
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -------- JS/TS (pnpm) --------
+      - name: Setup Node
+        if: matrix.language == 'javascript-typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup pnpm
+        if: matrix.language == 'javascript-typescript'
+        uses: pnpm/action-setup@v4
+        with:
+          version: "9"
+          run_install: false
+
+      - name: Detect pnpm project directory
+        if: matrix.language == 'javascript-typescript'
+        id: pnpm_dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOCKFILE="$(find . -maxdepth 4 -name pnpm-lock.yaml -print -quit)"
+          if [ -z "${LOCKFILE:-}" ]; then
+            echo "pnpm-lock.yaml not found (maxdepth 4)."
+            exit 1
+          fi
+          DIR="$(dirname "$LOCKFILE")"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Detected pnpm dir: $DIR"
+
+      - name: Install JS/TS dependencies
+        if: matrix.language == 'javascript-typescript'
+        working-directory: ${{ steps.pnpm_dir.outputs.dir }}
+        run: pnpm install --frozen-lockfile
+
+      # -------- Rust --------
+      - name: Setup Rust
+        if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Detect Rust project directory
+        if: matrix.language == 'rust'
+        id: cargo_dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOML="$(find . -maxdepth 5 -name Cargo.toml -print -quit)"
+          if [ -z "${TOML:-}" ]; then
+            echo "Cargo.toml not found (maxdepth 5)."
+            exit 1
+          fi
+          DIR="$(dirname "$TOML")"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Detected cargo dir: $DIR"
+
+      - name: Cargo fetch
+        if: matrix.language == 'rust'
+        working-directory: ${{ steps.cargo_dir.outputs.dir }}
+        run: cargo fetch --locked || cargo fetch
+
+      # -------- CodeQL --------
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # If you want deeper scanning:
+          # queries: security-extended,security-and-quality
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
