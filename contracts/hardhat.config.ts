@@ -5,6 +5,8 @@ import * as dotenv from "dotenv";
 
 dotenv.config();
 
+const arcRpcUrl = process.env.ARC_RPC_URL || "http://localhost:8545";
+
 export default defineConfig({
   plugins: [hardhatMocha, hardhatEthers],
 
@@ -20,7 +22,7 @@ export default defineConfig({
   networks: {
     arc_testnet: {
       type: "http",
-      url: process.env.ARC_RPC_URL || "",
+      url: arcRpcUrl,
       chainId: 5042002,
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },
