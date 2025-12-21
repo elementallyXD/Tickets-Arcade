@@ -1,46 +1,58 @@
+# Ticket Arcade
 
-## Project Structure
-The project is organized into the following main directories:
-- backend
-- contracts
-- docs
-- fornted
+Ticket Arcade is a provably fair raffle system for Arc L1 (EVM). Users buy USDC tickets, raffles close by time or sellout, randomness is requested, a winner is selected on-chain, and payouts are finalized on-chain.
 
-## Contracts
-This directory contains all the smart contract code for the project. It includes:
-- `contracts/`: The main smart contract files.
-- `migrations/`: Scripts for deploying the contracts.
-- `test/`: Unit tests for the smart contracts.
-- `scripts/`: Utility scripts for interacting with the contracts.
-- `hardhat.config.js`: Configuration file for the Hardhat development environment.
-- `package.json`: Node.js package file listing dependencies and scripts.
+## Repo structure
+- `backend/`: Rust service placeholder (indexer/API will live here).
+- `contracts/`: Solidity contracts, Hardhat v3 config, and tests.
+- `docs/`: Project documentation (empty for now).
+- `frontend/`: Frontend app placeholder (React planned).
 
-Contracts are written in Solidity and are designed to be deployed on the Arc blockchain.
+## Contracts overview
+Main contracts (in `contracts/contracts/`):
+- `RaffleFactory.sol`: deploys a `Raffle` per raffle, enforces fee caps, and uses a delayed randomness provider update.
+- `Raffle.sol`: ticket sales, close -> randomness request -> fulfill -> finalize flow, refund path if VRF stalls, creator/keeper permissions.
 
-## Raffle Contract State Machine
-The Raffle contract operates through a defined state machine with the following states and transitions:
+Key behaviors:
+- Tickets are sold in contiguous ranges to make winner verification deterministic.
+- Refunds are available after `REFUND_DELAY` if randomness is not fulfilled.
+- Randomness provider updates are scheduled and applied after a delay.
+
+Events used by the backend/indexer:
+- Factory: `RaffleCreated`, `RandomnessProviderUpdateScheduled`, `RandomnessProviderUpdated`, `MaxFeeBpsUpdated`
+- Raffle: `TicketsBought`, `RaffleClosed`, `RandomnessRequested`, `RandomnessFulfilled`, `WinnerSelected`, `PayoutsCompleted`, `RefundClaimed`, `KeeperUpdated`
+
+## Contract state machine
 ```
 ACTIVE -> CLOSED -> RANDOM_REQUESTED -> RANDOM_FULFILLED -> FINALIZED
-                  \                    \
-                   \                    -> (refund path if delay passed)
-                    -> (refund path if delay passed)
+           \                         \
+            \                         -> refund path after delay
+             -> refund path after delay
 ```
 
-**States:**
-`ACTIVE`: The raffle is open for ticket purchases.
-`CLOSED`: The raffle is closed for ticket purchases.
-`RANDOM_REQUESTED`: A request for randomness has been made to determine the winner.
-`RANDOM_FULFILLED`: Randomness has been received and the winner can be determined.
-`FINALIZED`: The raffle has been finalized and the winner has been awarded.
-`Refund Path`: If a certain delay has passed without randomness being fulfilled, refunds can be enabled, allowing participants to reclaim their tickets.
+## Quick start (contracts)
+From `contracts/`:
+```
+pnpm install
+pnpm hardhat compile
+pnpm hardhat test mocha
+pnpm hardhat clean
+```
 
-**Valid Transitions:**
-- `ACTIVE` → `CLOSED`: via `close()` or auto-close on sold out
-- `CLOSED` → `RANDOM_REQUESTED`: via `requestRandom()`
-- `RANDOM_REQUESTED` → `RANDOM_FULFILLED`: via `fulfillRandomness()`
-- `RANDOM_FULFILLED` → `FINALIZED`: via `finalize()`
+## Environment
+Create `contracts/.env` for testnet runs:
+```
+ARC_RPC_URL=...
+PRIVATE_KEY=...
+```
+Local tests do not require a `.env`.
 
-**Refund Path:**
-- From `CLOSED` or `RANDOM_REQUESTED`: If `endTime + REFUND_DELAY` has passed
-- Once any refund occurs, `refundsEnabled = true` blocks `fulfillRandomness()` and `finalize()`
+## Current status
+- Contracts: MVP complete with tests.
+- Backend: placeholder Rust crate.
+- Frontend: placeholder directory.
 
+## Notes
+- Solidity version: ^0.8.24
+- Tooling: Hardhat v3, ethers v6, Mocha tests
+- No OpenZeppelin dependencies (minimal surface area).
