@@ -1,0 +1,87 @@
+name: "CodeQL Advanced"
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+  schedule:
+    - cron: "39 6 * * 5"
+
+concurrency:
+  group: codeql-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+          - language: rust
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # --- Optional but recommended: install deps so CodeQL sees full dependency graph ---
+      # JS/TS deps (pnpm)
+      - name: Setup Node
+        if: matrix.language == 'javascript-typescript'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Setup pnpm
+        if: matrix.language == 'javascript-typescript'
+        uses: pnpm/action-setup@v4
+        with:
+          version: "9"
+
+      - name: Install JS/TS dependencies
+        if: matrix.language == 'javascript-typescript'
+        run: pnpm install --frozen-lockfile
+
+      # Rust deps (lightweight). build-mode none is supported for Rust. :contentReference[oaicite:3]{index=3}
+      - name: Setup Rust
+        if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo fetch
+        if: matrix.language == 'rust'
+        run: cargo fetch --locked || cargo fetch
+
+      # Initializes CodeQL
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Recommended query suites (uncomment if you want deeper scanning):
+          # queries: security-extended,security-and-quality
+
+      # If you ever switch Rust to manual/autobuild, add build steps here.
+      - name: Run manual build steps
+        if: matrix.build-mode == 'manual'
+        shell: bash
+        run: |
+          echo "Manual build mode enabled. Add your build commands here."
+          exit 1
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
