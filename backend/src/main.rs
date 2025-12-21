@@ -1,27 +1,60 @@
-use std::io;
+mod config;
+mod api;
+mod indexer;
+mod state;
 
-fn main() {
-    println!("Please enter your name:");
+use axum::{http::StatusCode, response::IntoResponse, routing::get, Json, Router};
+use serde_json::json;
+use sqlx::postgres::PgPoolOptions;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+use tracing_subscriber::EnvFilter;
+use state::AppState;
 
-    let mut user_name: String = String::new();
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env().add_directive("info".parse()?))
+        .init();
 
-    io::stdin()
-        .read_line(&mut user_name)
-        .expect("Failed: Unable to read line.");
+    let config = config::AppConfig::from_env()?;
+    tracing::info!(
+        chain_id = config.chain_id,
+        randomness_provider_address = ?config.randomness_provider_address,
+        "config loaded"
+    );
+    let db_pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&config.database_url)
+        .await?;
 
-    let user_name = user_name.trim();
-    println!("Hello, : {}", user_name);
+    let addr: SocketAddr = config.bind_addr.parse()?;
+    let app_state = AppState {
+        db: db_pool,
+        config,
+    };
+    let indexer_db = app_state.db.clone();
+    let indexer_config = app_state.config.clone();
+    // Run the indexer in the background alongside the API server.
+    tokio::spawn(async move {
+        if let Err(err) = indexer::run(indexer_db, indexer_config).await {
+            tracing::error!(error = %err, "indexer stopped");
+        }
+    });
+    let app = Router::<AppState>::new()
+        .route("/health", get(health))
+        .nest("/v1", api::router())
+        .with_state(app_state);
 
-    if check_name(user_name) {
-        println!("This is admin!");
-    }
+    let listener = TcpListener::bind(addr).await?;
+    tracing::info!(%addr, "backend listening");
+    axum::serve(listener, app).await?;
+
+    Ok(())
 }
 
-// Function to check if the user name is an admin name
-// Returns true if the name matches any of the predefined admin names
-fn check_name(user: &str) -> bool {
-    matches!(
-        user,
-        "admin" | "administrator" | "root" | "superuser" | "sysadmin"
-    )
+async fn health() -> impl IntoResponse {
+    let body = json!({ "status": "ok" });
+    (StatusCode::OK, Json(body))
 }
