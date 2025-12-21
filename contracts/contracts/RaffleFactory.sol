@@ -14,11 +14,15 @@ contract RaffleFactory {
     // -------------------------
     address public immutable usdc;
     address public randomnessProvider;
+    address public pendingRandomnessProvider;
+    uint256 public pendingRandomnessProviderAt;
 
     uint16 public maxFeeBps; // global cap, e.g. 500 = 5%
     uint256 public nextRaffleId;
 
     address[] public raffles;
+
+    uint256 public constant PROVIDER_UPDATE_DELAY = 1 days;
 
     // -------------------------
     // Events
@@ -35,6 +39,7 @@ contract RaffleFactory {
     );
 
     event RandomnessProviderUpdated(address indexed oldProvider, address indexed newProvider);
+    event RandomnessProviderUpdateScheduled(address indexed newProvider, uint256 executeAfter);
     event MaxFeeBpsUpdated(uint16 oldMaxFeeBps, uint16 newMaxFeeBps);
 
     // -------------------------
@@ -44,6 +49,8 @@ contract RaffleFactory {
     error InvalidParams();
     error FeeTooHigh();
     error Unauthorized();
+    error TooEarly();
+    error NoPendingUpdate();
 
     // -------------------------
     // Constructor
@@ -87,7 +94,7 @@ contract RaffleFactory {
         if (endTime <= block.timestamp) revert InvalidParams();
         if (feeBps > maxFeeBps) revert FeeTooHigh();
 
-        address creator = msg.sender;
+        address raffleCreator = msg.sender;
         uint256 raffleId = nextRaffleId;
         nextRaffleId = raffleId + 1;
 
@@ -95,7 +102,7 @@ contract RaffleFactory {
             raffleId,
             usdc,
             randomnessProvider,
-            creator,
+            raffleCreator,
             endTime,
             ticketPrice,
             maxTickets,
@@ -109,7 +116,7 @@ contract RaffleFactory {
         emit RaffleCreated(
             raffleId,
             raffleAddr,
-            creator,
+            raffleCreator,
             endTime,
             ticketPrice,
             maxTickets,
@@ -125,10 +132,24 @@ contract RaffleFactory {
         if (msg.sender != admin) revert Unauthorized();
         if (newProvider == address(0)) revert InvalidAddress();
 
-        address old = randomnessProvider;
-        randomnessProvider = newProvider;
+        pendingRandomnessProvider = newProvider;
+        pendingRandomnessProviderAt = block.timestamp;
 
-        emit RandomnessProviderUpdated(old, newProvider);
+        emit RandomnessProviderUpdateScheduled(newProvider, block.timestamp + PROVIDER_UPDATE_DELAY);
+    }
+
+    function applyRandomnessProvider() external {
+        if (msg.sender != admin) revert Unauthorized();
+        address pendingProvider = pendingRandomnessProvider;
+        if (pendingProvider == address(0)) revert NoPendingUpdate();
+        if (block.timestamp < pendingRandomnessProviderAt + PROVIDER_UPDATE_DELAY) revert TooEarly();
+
+        address previousProvider = randomnessProvider;
+        randomnessProvider = pendingProvider;
+        pendingRandomnessProvider = address(0);
+        pendingRandomnessProviderAt = 0;
+
+        emit RandomnessProviderUpdated(previousProvider, pendingProvider);
     }
 
     function setMaxFeeBps(uint16 newMaxFeeBps) external {

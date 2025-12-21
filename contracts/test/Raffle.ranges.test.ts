@@ -1,18 +1,6 @@
 import { expect } from "chai";
 import { network } from "hardhat";
-import type { BaseContract } from "ethers";
-
-type MockUSDCContract = BaseContract & {
-  mint(to: string, amount: bigint): Promise<unknown>;
-  approve(spender: string, amount: bigint): Promise<boolean>;
-};
-
-type RaffleContract = BaseContract & {
-  buyTickets(count: number): Promise<unknown>;
-  totalTickets(): Promise<bigint>;
-  pot(): Promise<bigint>;
-  ranges(index: number): Promise<{ buyer: string; start: bigint; end: bigint }>;
-};
+import type { MockUSDCContract, RaffleContract } from "./helpers/types.js";
 
 describe("Ticket Arcade - Raffle ticket ranges", function () {
   it("allocates contiguous ticket ranges and updates pot", async function () {
@@ -33,8 +21,8 @@ describe("Ticket Arcade - Raffle ticket ranges", function () {
     const factory = await Factory.deploy(await usdc.getAddress(), await rng.getAddress(), maxFeeBps);
     await factory.waitForDeployment();
 
-    const block = await ethers.provider.getBlock("latest");
-    const now = BigInt(block!.timestamp);
+    const latestBlock = await ethers.provider.getBlock("latest");
+    const now = BigInt(latestBlock!.timestamp);
 
     const endTime = now + 3600n;
     const ticketPrice = 2_000_000n; // 2 USDC (6 decimals)
@@ -46,20 +34,21 @@ describe("Ticket Arcade - Raffle ticket ranges", function () {
     const raffleAddr = await factory.raffles(0);
     const raffle = (await ethers.getContractAt("Raffle", raffleAddr)) as unknown as RaffleContract;
 
-    await usdc.mint(alice.address, 1_000_000_000n);
-    await usdc.mint(bob.address, 1_000_000_000n);
+    const mintAmount = 1_000_000_000n;
+    await usdc.mint(alice.address, mintAmount);
+    await usdc.mint(bob.address, mintAmount);
 
     const usdcAlice = usdc.connect(alice) as MockUSDCContract;
     const usdcBob = usdc.connect(bob) as MockUSDCContract;
 
-    await usdcAlice.approve(raffleAddr, 1_000_000_000n);
-    await usdcBob.approve(raffleAddr, 1_000_000_000n);
+    await usdcAlice.approve(raffleAddr, mintAmount);
+    await usdcBob.approve(raffleAddr, mintAmount);
 
     const raffleAlice = raffle.connect(alice) as RaffleContract;
     const raffleBob = raffle.connect(bob) as RaffleContract;
 
     await raffleAlice.buyTickets(3); // [0..2]
-    await raffleBob.buyTickets(2);   // [3..4]
+    await raffleBob.buyTickets(2); // [3..4]
 
     expect(await raffle.totalTickets()).to.equal(5n);
     expect(await raffle.pot()).to.equal(ticketPrice * 5n);

@@ -83,6 +83,14 @@ contract Raffle {
         uint256 feeAmount
     );
 
+    event PayoutsCompleted(
+        uint256 indexed raffleId,
+        address indexed winner,
+        address indexed feeRecipient,
+        uint256 prizeAmount,
+        uint256 feeAmount
+    );
+
     event KeeperUpdated(address oldKeeper, address newKeeper);
     event RefundClaimed(uint256 raffleId, address buyer, uint256 amount);
 
@@ -104,6 +112,11 @@ contract Raffle {
     error RefundsEnabled();
     error RefundsNotAvailable();
     error AlreadyRefunded();
+    error Reentrancy();
+    error InsufficientPot();
+    error InsufficientBalance();
+
+    bool private locked;
 
     modifier onlyCreator() {
         if (msg.sender != creator) revert Unauthorized();
@@ -113,6 +126,18 @@ contract Raffle {
     modifier onlyOperator() {
         if (msg.sender != creator && msg.sender != keeper) revert Unauthorized();
         _;
+    }
+
+    modifier onlyOperatorOrFactory() {
+        if (msg.sender != factory && msg.sender != creator && msg.sender != keeper) revert Unauthorized();
+        _;
+    }
+
+    modifier nonReentrant() {
+        if (locked) revert Reentrancy();
+        locked = true;
+        _;
+        locked = false;
     }
 
     constructor(
@@ -189,7 +214,7 @@ contract Raffle {
     // -------------------------
     // User actions
     // -------------------------
-    function buyTickets(uint32 count) external {
+    function buyTickets(uint32 count) external nonReentrant {
         if (status != Status.ACTIVE) revert NotActive();
         if (block.timestamp >= endTime) revert TooLate();
         if (count == 0) revert InvalidCount();
@@ -201,16 +226,16 @@ contract Raffle {
         bool ok = usdc.transferFrom(msg.sender, address(this), cost);
         if (!ok) revert InvalidRequest();
 
-        uint32 start = totalTickets;
-        uint32 end = totalTickets + count - 1;
+        uint32 startIndex = totalTickets;
+        uint32 endIndex = startIndex + count - 1;
 
-        ranges.push(TicketRange({ buyer: msg.sender, start: start, end: end }));
+        ranges.push(TicketRange({ buyer: msg.sender, start: startIndex, end: endIndex }));
         ticketsByBuyer[msg.sender] += count;
 
         totalTickets += count;
         pot += cost;
 
-        emit TicketsBought(raffleId, msg.sender, start, end, count, cost);
+        emit TicketsBought(raffleId, msg.sender, startIndex, endIndex, count, cost);
 
         // Auto-close if sold out
         if (totalTickets == maxTickets) {
@@ -218,7 +243,7 @@ contract Raffle {
         }
     }
 
-    function close() external {
+    function close() external onlyOperatorOrFactory {
         _close();
     }
 
@@ -238,43 +263,45 @@ contract Raffle {
         emit KeeperUpdated(oldKeeper, newKeeper);
     }
 
-    function refund() external {
+    function refund() external nonReentrant {
         if (!(status == Status.CLOSED || status == Status.RANDOM_REQUESTED)) revert RefundsNotAvailable();
         if (block.timestamp < refundAvailableAt()) revert TooEarly();
         if (refunded[msg.sender]) revert AlreadyRefunded();
 
-        uint32 count = ticketsByBuyer[msg.sender];
-        if (count == 0) revert NoTickets();
+        uint32 tickets = ticketsByBuyer[msg.sender];
+        if (tickets == 0) revert NoTickets();
 
-        uint256 amount = ticketPrice * uint256(count);
+        uint256 refundValue = ticketPrice * uint256(tickets);
+        if (refundValue > pot) revert InsufficientPot();
+        if (usdc.balanceOf(address(this)) < refundValue) revert InsufficientBalance();
 
         refunded[msg.sender] = true;
         if (!refundsEnabled) {
             refundsEnabled = true;
         }
 
-        pot -= amount;
+        pot -= refundValue;
 
-        bool ok = usdc.transfer(msg.sender, amount);
+        bool ok = usdc.transfer(msg.sender, refundValue);
         if (!ok) revert InvalidRequest();
 
-        emit RefundClaimed(raffleId, msg.sender, amount);
+        emit RefundClaimed(raffleId, msg.sender, refundValue);
     }
 
     // -------------------------
     // Randomness flow
     // -------------------------
-    function requestRandom() external onlyOperator {
+    function requestRandom() external onlyOperator nonReentrant {
         if (refundsEnabled) revert RefundsEnabled();
         if (status != Status.CLOSED) revert NotClosed();
         if (totalTickets == 0) revert NoTickets();
 
         status = Status.RANDOM_REQUESTED;
 
-        uint256 rid = IRandomnessProvider(randomnessProvider).requestRandomness(raffleId);
-        requestId = rid;
+        uint256 requestIdValue = IRandomnessProvider(randomnessProvider).requestRandomness(raffleId);
+        requestId = requestIdValue;
 
-        emit RandomnessRequested(raffleId, rid);
+        emit RandomnessRequested(raffleId, requestIdValue);
     }
 
     /// @notice Called by the randomness provider (VRF) when randomness is ready.
@@ -296,20 +323,21 @@ contract Raffle {
     // -------------------------
     // Finalization / payout
     // -------------------------
-    function finalize() external onlyOperator {
+    function finalize() external onlyOperator nonReentrant {
         if (refundsEnabled) revert RefundsEnabled();
         if (status != Status.RANDOM_FULFILLED) revert NotRandomFulfilled();
         if (winner != address(0)) revert AlreadyFinalized();
 
-        address w = _findWinner(uint32(winningIndex));
-        winner = w;
+        address winnerAddress = _findWinner(uint32(winningIndex));
+        winner = winnerAddress;
 
         uint256 feeAmount = (pot * uint256(feeBps)) / 10000;
         uint256 prizeAmount = pot - feeAmount;
+        if (usdc.balanceOf(address(this)) < pot) revert InsufficientBalance();
 
         // effects done, now interactions
         if (prizeAmount > 0) {
-            bool ok1 = usdc.transfer(w, prizeAmount);
+            bool ok1 = usdc.transfer(winnerAddress, prizeAmount);
             if (!ok1) revert InvalidRequest();
         }
 
@@ -320,7 +348,8 @@ contract Raffle {
 
         status = Status.FINALIZED;
 
-        emit WinnerSelected(raffleId, w, winningIndex, prizeAmount, feeAmount);
+        emit PayoutsCompleted(raffleId, winnerAddress, feeRecipient, prizeAmount, feeAmount);
+        emit WinnerSelected(raffleId, winnerAddress, winningIndex, prizeAmount, feeAmount);
     }
 
     // -------------------------
@@ -332,13 +361,13 @@ contract Raffle {
         uint256 high = ranges.length;
         while (low < high) {
             uint256 mid = (low + high) / 2;
-            TicketRange memory r = ranges[mid];
-            if (idx < r.start) {
+            TicketRange memory range = ranges[mid];
+            if (idx < range.start) {
                 high = mid;
-            } else if (idx > r.end) {
+            } else if (idx > range.end) {
                 low = mid + 1;
             } else {
-                return r.buyer;
+                return range.buyer;
             }
         }
         // Should be impossible if ranges are correct

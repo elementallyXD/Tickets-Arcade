@@ -1,30 +1,6 @@
 import { expect } from "chai";
 import { network } from "hardhat";
-import type { BaseContract } from "ethers";
-
-type MockUSDCContract = BaseContract & {
-  mint(to: string, amount: bigint): Promise<unknown>;
-  approve(spender: string, amount: bigint): Promise<boolean>;
-  balanceOf(owner: string): Promise<bigint>;
-};
-
-type RaffleContract = BaseContract & {
-  buyTickets(count: number): Promise<unknown>;
-  totalTickets(): Promise<bigint>;
-  pot(): Promise<bigint>;
-  close(): Promise<unknown>;
-  requestRandom(): Promise<unknown>;
-  requestId(): Promise<bigint>;
-  randomness(): Promise<bigint>;
-  winningIndex(): Promise<bigint>;
-  finalize(): Promise<unknown>;
-  winner(): Promise<string>;
-  status(): Promise<bigint>;
-};
-
-type MockRngContract = BaseContract & {
-  fulfill(requestId: bigint, randomness: bigint): Promise<unknown>;
-};
+import type { MockRngContract, MockUSDCContract, RaffleContract } from "./helpers/types.js";
 
 describe("Ticket Arcade - Raffle E2E flow", function () {
   it("closes, requests randomness, fulfills, finalizes, and pays winner + fee", async function () {
@@ -50,8 +26,8 @@ describe("Ticket Arcade - Raffle E2E flow", function () {
     await factory.waitForDeployment();
 
     // Create raffle (short endTime so we can close via time travel)
-    const block0 = await ethers.provider.getBlock("latest");
-    const now = BigInt(block0!.timestamp);
+    const latestBlock = await ethers.provider.getBlock("latest");
+    const now = BigInt(latestBlock!.timestamp);
 
     const ticketPrice = 1_000_000n; // 1 USDC (6 decimals)
     const maxTickets = 10;
@@ -62,17 +38,17 @@ describe("Ticket Arcade - Raffle E2E flow", function () {
 
     const raffleAddr = await factory.raffles(0);
     const raffle = (await ethers.getContractAt("Raffle", raffleAddr)) as unknown as RaffleContract;
-    const rngContract = (await ethers.getContractAt("MockRandomnessProvider", rngAddr)) as unknown as MockRngContract;
 
     // Fund buyers + approvals
-    await usdc.mint(alice.address, 1_000_000_000n);
-    await usdc.mint(bob.address, 1_000_000_000n);
+    const mintAmount = 1_000_000_000n;
+    await usdc.mint(alice.address, mintAmount);
+    await usdc.mint(bob.address, mintAmount);
 
     const usdcAlice = usdc.connect(alice) as MockUSDCContract;
     const usdcBob = usdc.connect(bob) as MockUSDCContract;
 
-    await usdcAlice.approve(raffleAddr, 1_000_000_000n);
-    await usdcBob.approve(raffleAddr, 1_000_000_000n);
+    await usdcAlice.approve(raffleAddr, mintAmount);
+    await usdcBob.approve(raffleAddr, mintAmount);
 
     // Buy tickets:
     // Alice buys 3 -> indices 0..2
@@ -103,7 +79,7 @@ describe("Ticket Arcade - Raffle E2E flow", function () {
     // Use randomness = 3 => winningIndex=3 => belongs to Bob (3..4)
     const randomness = 3n;
 
-    await rngContract.fulfill(reqId, randomness);
+    await rng.fulfill(reqId, randomness);
 
     expect(await raffle.randomness()).to.equal(randomness);
     expect(await raffle.winningIndex()).to.equal(3n);

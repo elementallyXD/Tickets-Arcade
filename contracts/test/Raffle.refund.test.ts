@@ -1,27 +1,11 @@
 import { expect } from "chai";
 import { network } from "hardhat";
-import type { BaseContract } from "ethers";
-
-type MockUSDCContract = BaseContract & {
-  mint(to: string, amount: bigint): Promise<unknown>;
-  approve(spender: string, amount: bigint): Promise<boolean>;
-  balanceOf(owner: string): Promise<bigint>;
-};
-
-type RaffleContract = BaseContract & {
-  buyTickets(count: number): Promise<unknown>;
-  close(): Promise<unknown>;
-  requestRandom(): Promise<unknown>;
-  refund(): Promise<unknown>;
-  refundsEnabled(): Promise<boolean>;
-  REFUND_DELAY(): Promise<bigint>;
-  refundAvailableAt(): Promise<bigint>;
-};
+import type { MockUSDCContract, RaffleContract } from "./helpers/types.js";
 
 describe("Ticket Arcade - Refund flow", function () {
   it("allows refunds after delay if randomness never arrives", async function () {
     const { ethers } = await network.connect();
-    const [deployer, alice, feeRecipient] = await ethers.getSigners();
+    const [, alice, feeRecipient] = await ethers.getSigners();
 
     const MockUSDC = await ethers.getContractFactory("MockUSDC");
     const usdc = (await MockUSDC.deploy()) as unknown as MockUSDCContract;
@@ -35,8 +19,8 @@ describe("Ticket Arcade - Refund flow", function () {
     const factory = await Factory.deploy(await usdc.getAddress(), await rng.getAddress(), 500);
     await factory.waitForDeployment();
 
-    const block0 = await ethers.provider.getBlock("latest");
-    const now = BigInt(block0!.timestamp);
+    const latestBlock = await ethers.provider.getBlock("latest");
+    const now = BigInt(latestBlock!.timestamp);
 
     const ticketPrice = 1_000_000n;
     const maxTickets = 10;
@@ -47,11 +31,12 @@ describe("Ticket Arcade - Refund flow", function () {
     const raffleAddr = await factory.raffles(0);
     const raffle = (await ethers.getContractAt("Raffle", raffleAddr)) as unknown as RaffleContract;
 
-    await usdc.mint(alice.address, 1_000_000_000n);
+    const mintAmount = 1_000_000_000n;
+    await usdc.mint(alice.address, mintAmount);
     const usdcAlice = usdc.connect(alice) as MockUSDCContract;
     const raffleAlice = raffle.connect(alice) as RaffleContract;
 
-    await usdcAlice.approve(raffleAddr, 1_000_000_000n);
+    await usdcAlice.approve(raffleAddr, mintAmount);
 
     await raffleAlice.buyTickets(4);
 
