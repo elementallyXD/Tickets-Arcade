@@ -5,16 +5,18 @@
 import type { BaseContract, ContractTransactionResponse } from "ethers";
 
 // =============================================================================
-// STATUS ENUM (mirrors Raffle.Status)
+// STATUS VALUES (mirrors Raffle.Status)
 // =============================================================================
 
-export enum RaffleStatus {
-  ACTIVE = 0n,
-  CLOSED = 1n,
-  RANDOM_REQUESTED = 2n,
-  RANDOM_FULFILLED = 3n,
-  FINALIZED = 4n,
-}
+export const RaffleStatus = {
+  ACTIVE: 0n,
+  CLOSED: 1n,
+  RANDOM_REQUESTED: 2n,
+  RANDOM_FULFILLED: 3n,
+  FINALIZED: 4n,
+} as const;
+
+export type RaffleStatus = typeof RaffleStatus[keyof typeof RaffleStatus];
 
 // =============================================================================
 // CONTRACT TYPES
