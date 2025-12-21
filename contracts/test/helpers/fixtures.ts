@@ -5,9 +5,9 @@
  * across test files.
  */
 import { network } from "hardhat";
-import type { 
-  MockUSDCContract, 
-  MockRngContract, 
+import type {
+  DrandRandomnessProviderContract,
+  MockUSDCContract,
   RaffleContract,
   RaffleFactoryContract,
 } from "./types.js";
@@ -32,7 +32,7 @@ export interface TestContext {
   charlie: Awaited<ReturnType<typeof getSigners>>[3];
   feeRecipient: Awaited<ReturnType<typeof getSigners>>[4];
   usdc: MockUSDCContract;
-  rng: MockRngContract;
+  rng: DrandRandomnessProviderContract;
   factory: RaffleFactoryContract;
   raffle: RaffleContract;
   raffleAddr: string;
@@ -57,7 +57,7 @@ async function getSigners() {
  * 
  * Setup includes:
  * - MockUSDC deployed
- * - MockRandomnessProvider deployed  
+ * - DrandRandomnessProvider deployed
  * - RaffleFactory deployed
  * - One raffle created (endTime = now + 1 hour)
  * - Alice, Bob, Charlie funded with USDC and approved
@@ -72,9 +72,9 @@ export async function deployRaffleFixture(): Promise<TestContext> {
   await usdc.waitForDeployment();
   const usdcAddr = await usdc.getAddress();
 
-  // Deploy MockRandomnessProvider
-  const MockRng = await ethers.getContractFactory("MockRandomnessProvider");
-  const rng = (await MockRng.deploy()) as unknown as MockRngContract;
+  // Deploy DrandRandomnessProvider
+  const Drand = await ethers.getContractFactory("DrandRandomnessProvider");
+  const rng = (await Drand.deploy(deployer.address)) as unknown as DrandRandomnessProviderContract;
   await rng.waitForDeployment();
   const rngAddr = await rng.getAddress();
 
@@ -197,7 +197,7 @@ export async function fulfillRandomness(
 ): Promise<void> {
   await ctx.raffle.requestRandom();
   const reqId = await ctx.raffle.requestId();
-  await ctx.rng.fulfill(reqId, randomnessValue);
+  await ctx.rng.deliverRandomness(reqId, randomnessValue, "0x");
 }
 
 /**

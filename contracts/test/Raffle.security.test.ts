@@ -1,6 +1,6 @@
 import { expect } from "chai";
 import { network } from "hardhat";
-import type { MockRngContract, MockUSDCContract, RaffleContract } from "./helpers/types.js";
+import type { DrandRandomnessProviderContract, MockUSDCContract, RaffleContract } from "./helpers/types.js";
 
 /**
  * Security regression tests for Raffle contract
@@ -17,8 +17,8 @@ describe("Ticket Arcade - Security Edge Cases", function () {
     await usdc.waitForDeployment();
     const usdcAddr = await usdc.getAddress();
 
-    const MockRng = await ethers.getContractFactory("MockRandomnessProvider");
-    const rng = (await MockRng.deploy()) as unknown as MockRngContract;
+    const Drand = await ethers.getContractFactory("DrandRandomnessProvider");
+    const rng = (await Drand.deploy(deployer.address)) as unknown as DrandRandomnessProviderContract;
     await rng.waitForDeployment();
     const rngAddr = await rng.getAddress();
 
@@ -168,7 +168,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       await raffle.requestRandom();
       
       const reqId = await raffle.requestId();
-      await rng.fulfill(reqId, 12345n);
+      await rng.deliverRandomness(reqId, 12345n, "0x");
       
       await raffle.finalize();
       
@@ -209,7 +209,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       // Now fulfill should fail
       let reverted = false;
       try {
-        await rng.fulfill(reqId, 12345n);
+        await rng.deliverRandomness(reqId, 12345n, "0x");
       } catch (err) {
         reverted = true;
         expect(String(err)).to.include("RefundsAlreadyEnabled");
@@ -245,7 +245,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       // Now try to fulfill - should fail because refundsEnabled
       let fulfillReverted = false;
       try {
-        await rng.fulfill(reqId, 12345n);
+        await rng.deliverRandomness(reqId, 12345n, "0x");
       } catch (err) {
         fulfillReverted = true;
         expect(String(err)).to.include("RefundsAlreadyEnabled");
@@ -253,15 +253,13 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       expect(fulfillReverted).to.equal(true);
       
       // Status is still RANDOM_REQUESTED, finalize should fail
-      // Either NotRandomFulfilled (status check) or RefundsAlreadyEnabled (refunds check) 
       let finalizeReverted = false;
       try {
         await raffle.finalize();
       } catch (err) {
         finalizeReverted = true;
-        // Could be either RefundsAlreadyEnabled or NotRandomFulfilled depending on check order
         const errorStr = String(err);
-        expect(errorStr.includes("NotRandomFulfilled") || errorStr.includes("RefundsAlreadyEnabled")).to.equal(true);
+        expect(errorStr.includes("RefundsAlreadyEnabled")).to.equal(true);
       }
       expect(finalizeReverted).to.equal(true);
       
@@ -270,8 +268,8 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       expect(await raffle.pot()).to.equal(0n);
     });
 
-    it("should emit RefundsStarted event on first refund", async function () {
-      const { raffle, alice, endTime, ethers, raffleAddr } = await deployRaffleFixture();
+    it("should emit RefundClaimed event on first refund", async function () {
+      const { raffle, alice, endTime, ethers, raffleAddr, ticketPrice } = await deployRaffleFixture();
       
       const raffleAlice = raffle.connect(alice) as RaffleContract;
       await raffleAlice.buyTickets(3);
@@ -286,23 +284,24 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       await ethers.provider.send("evm_setNextBlockTimestamp", [Number(refundAt + 1n)]);
       await ethers.provider.send("evm_mine", []);
       
-      // Check for RefundsStarted event
+      // Check for RefundClaimed event
       const raffleContract = await ethers.getContractAt("Raffle", raffleAddr);
       const tx = await raffleAlice.refund();
       const receipt = await (tx as any).wait();
       
-      // Find RefundsStarted event
+      // Find RefundClaimed event
       const iface = raffleContract.interface;
-      const refundsStartedTopic = iface.getEvent("RefundsStarted")!.topicHash;
-      const hasRefundsStarted = receipt.logs.some(
-        (log: any) => log.topics[0] === refundsStartedTopic
-      );
-      expect(hasRefundsStarted).to.equal(true);
+      const refundClaimedTopic = iface.getEvent("RefundClaimed")!.topicHash;
+      const refundLog = receipt.logs.find((log: any) => log.topics[0] === refundClaimedTopic);
+      expect(refundLog).to.not.equal(undefined);
+      const decoded = iface.decodeEventLog("RefundClaimed", refundLog.data, refundLog.topics);
+      expect(decoded.buyer).to.equal(alice.address);
+      expect(decoded.amount).to.equal(ticketPrice * 3n);
     });
   });
 
   describe("Access Control", function () {
-    it("should allow anyone to close() after endTime", async function () {
+    it("should restrict close() to operator or factory", async function () {
       const { raffle, alice, charlie, endTime, ethers } = await deployRaffleFixture();
       
       const raffleAlice = raffle.connect(alice) as RaffleContract;
@@ -311,10 +310,18 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       await ethers.provider.send("evm_setNextBlockTimestamp", [Number(endTime + 1n)]);
       await ethers.provider.send("evm_mine", []);
       
-      // Charlie (random user, not operator) can close
+      // Charlie (random user, not operator) cannot close
       const raffleCharlie = raffle.connect(charlie) as RaffleContract;
-      await raffleCharlie.close();
-      
+      let reverted = false;
+      try {
+        await raffleCharlie.close();
+      } catch (err) {
+        reverted = true;
+        expect(String(err)).to.include("Unauthorized");
+      }
+      expect(reverted).to.equal(true);
+
+      await raffle.close();
       expect(await raffle.status()).to.equal(1n); // CLOSED
     });
 
@@ -327,7 +334,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       await ethers.provider.send("evm_setNextBlockTimestamp", [Number(endTime + 1n)]);
       await ethers.provider.send("evm_mine", []);
       
-      await raffleAlice.close();
+      await raffle.close();
       
       // Alice (non-operator) cannot request random
       let reverted = false;
@@ -353,7 +360,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       await raffle.requestRandom();
       
       const reqId = await raffle.requestId();
-      await rng.fulfill(reqId, 12345n);
+      await rng.deliverRandomness(reqId, 12345n, "0x");
       
       // Alice (non-operator) cannot finalize
       let reverted = false;
@@ -385,7 +392,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       await raffleBob.requestRandom();
       
       const reqId = await raffle.requestId();
-      await rng.fulfill(reqId, 12345n);
+      await rng.deliverRandomness(reqId, 12345n, "0x");
       
       // Bob can finalize
       await raffleBob.finalize();
@@ -425,11 +432,10 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       
       let reverted = false;
       try {
-        await rng.fulfill(wrongReqId, 12345n);
+        await rng.deliverRandomness(wrongReqId, 12345n, "0x");
       } catch (err) {
         reverted = true;
-        // MockRandomnessProvider will revert with "unknown requestId"
-        expect(String(err)).to.include("unknown requestId");
+        expect(String(err)).to.include("InvalidRequest");
       }
       expect(reverted).to.equal(true);
     });
@@ -450,10 +456,10 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       
       let reverted = false;
       try {
-        await rng.fulfill(reqId, 0n);
+        await rng.deliverRandomness(reqId, 0n, "0x");
       } catch (err) {
         reverted = true;
-        expect(String(err)).to.include("randomness=0");
+        expect(String(err)).to.include("InvalidRequest");
       }
       expect(reverted).to.equal(true);
     });
@@ -478,7 +484,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       
       await raffle.requestRandom();
       const reqId = await raffle.requestId();
-      await rng.fulfill(reqId, 12345n);
+      await rng.deliverRandomness(reqId, 12345n, "0x");
       
       const bobBefore = await usdc.balanceOf(bob.address);
       const feeBefore = await usdc.balanceOf(feeRecipient.address);
@@ -535,7 +541,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       
       const reqId = await raffle.requestId();
       // randomness=2 => winningIndex=2 => Alice (0..2)
-      await rng.fulfill(reqId, 2n);
+      await rng.deliverRandomness(reqId, 2n, "0x");
       
       const aliceBefore = await usdc.balanceOf(alice.address);
       await raffle.finalize();
@@ -725,7 +731,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       expect(refunded).to.equal(ticketPrice * 4n);
     });
 
-    it("should emit RefundClaimed with correct ticketCount", async function () {
+    it("should emit RefundClaimed with correct amount", async function () {
       const { raffle, alice, ethers, raffleAddr, endTime, ticketPrice } = await deployRaffleFixture();
       
       const raffleAlice = raffle.connect(alice) as RaffleContract;
@@ -756,7 +762,7 @@ describe("Ticket Arcade - Security Edge Cases", function () {
       
       // Decode the event data
       const decoded = iface.decodeEventLog("RefundClaimed", refundLog.data, refundLog.topics);
-      expect(decoded.ticketCount).to.equal(3n);
+      expect(decoded.buyer).to.equal(alice.address);
       expect(decoded.amount).to.equal(ticketPrice * 3n);
     });
   });

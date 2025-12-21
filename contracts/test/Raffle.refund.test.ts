@@ -1,18 +1,18 @@
 import { expect } from "chai";
 import { network } from "hardhat";
-import type { MockUSDCContract, RaffleContract } from "./helpers/types.js";
+import type { DrandRandomnessProviderContract, MockUSDCContract, RaffleContract } from "./helpers/types.js";
 
 describe("Ticket Arcade - Refund flow", function () {
   it("allows refunds after delay if randomness never arrives", async function () {
     const { ethers } = await network.connect();
-    const [, alice, feeRecipient] = await ethers.getSigners();
+    const [oracle, alice, feeRecipient] = await ethers.getSigners();
 
     const MockUSDC = await ethers.getContractFactory("MockUSDC");
     const usdc = (await MockUSDC.deploy()) as unknown as MockUSDCContract;
     await usdc.waitForDeployment();
 
-    const MockRng = await ethers.getContractFactory("MockRandomnessProvider");
-    const rng = await MockRng.deploy();
+    const Drand = await ethers.getContractFactory("DrandRandomnessProvider");
+    const rng = (await Drand.deploy(oracle.address)) as unknown as DrandRandomnessProviderContract;
     await rng.waitForDeployment();
 
     const Factory = await ethers.getContractFactory("RaffleFactory");

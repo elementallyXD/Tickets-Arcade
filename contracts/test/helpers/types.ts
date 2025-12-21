@@ -109,6 +109,22 @@ export type MockRngContract = BaseContract & {
   fulfill(requestId: bigint, randomness: bigint): Promise<ContractTransactionResponse>;
 };
 
+/**
+ * DrandRandomnessProvider - external oracle adapter
+ */
+export type DrandRandomnessProviderContract = BaseContract & {
+  oracle(): Promise<string>;
+  nextRequestId(): Promise<bigint>;
+  requestToRaffle(requestId: bigint): Promise<string>;
+  fulfilled(requestId: bigint): Promise<boolean>;
+  requestRandomness(raffleId: bigint): Promise<ContractTransactionResponse>;
+  deliverRandomness(
+    requestId: bigint,
+    randomness: bigint,
+    proof: string
+  ): Promise<ContractTransactionResponse>;
+};
+
 // =============================================================================
 // TEST CONSTANTS
 // =============================================================================
