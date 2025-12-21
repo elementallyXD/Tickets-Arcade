@@ -167,6 +167,25 @@ contract Raffle {
         return ranges.length;
     }
 
+    function refundAvailableAt() public view returns (uint256) {
+        return endTime + REFUND_DELAY;
+    }
+
+    function refundAmount(address buyer) public view returns (uint256) {
+        if (refunded[buyer]) {
+            return 0;
+        }
+        return ticketPrice * uint256(ticketsByBuyer[buyer]);
+    }
+
+    function canRefund(address buyer) external view returns (bool) {
+        if (refunded[buyer]) return false;
+        if (ticketsByBuyer[buyer] == 0) return false;
+        if (!(status == Status.CLOSED || status == Status.RANDOM_REQUESTED)) return false;
+        if (block.timestamp < refundAvailableAt()) return false;
+        return true;
+    }
+
     // -------------------------
     // User actions
     // -------------------------
@@ -221,7 +240,7 @@ contract Raffle {
 
     function refund() external {
         if (!(status == Status.CLOSED || status == Status.RANDOM_REQUESTED)) revert RefundsNotAvailable();
-        if (block.timestamp < endTime + REFUND_DELAY) revert TooEarly();
+        if (block.timestamp < refundAvailableAt()) revert TooEarly();
         if (refunded[msg.sender]) revert AlreadyRefunded();
 
         uint32 count = ticketsByBuyer[msg.sender];

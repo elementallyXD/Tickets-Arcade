@@ -15,6 +15,7 @@ type RaffleContract = BaseContract & {
   refund(): Promise<unknown>;
   refundsEnabled(): Promise<boolean>;
   REFUND_DELAY(): Promise<bigint>;
+  refundAvailableAt(): Promise<bigint>;
 };
 
 describe("Ticket Arcade - Refund flow", function () {
@@ -63,8 +64,7 @@ describe("Ticket Arcade - Refund flow", function () {
     await raffle.requestRandom();
 
     // Jump past refund delay: endTime + 1 day + 1
-    const refundDelay = await raffle.REFUND_DELAY();
-    const refundAt = endTime + refundDelay;
+    const refundAt = await raffle.refundAvailableAt();
     await ethers.provider.send("evm_setNextBlockTimestamp", [Number(refundAt + 1n)]);
     await ethers.provider.send("evm_mine", []);
 
