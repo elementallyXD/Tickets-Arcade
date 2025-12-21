@@ -60,6 +60,6 @@ Local tests do not require a `.env`.
 ## Contact
 For questions or contributions, please open an issue or contact the maintainer.
 Other ways to reach me are below:
-# X (Twitter): [@TicketArcade](https://x.com/TicketArcade)
-# Email: ticketarcade.official@gmail.com
-# EVM Address: 0x3b8059e6A461818bc8F8933428c965b38c5E0bC5
+- X (Twitter): [@TicketArcade](https://x.com/TicketArcade)
+- Email: ticketarcade.official@gmail.com
+- EVM Address: 0x3b8059e6A461818bc8F8933428c965b38c5E0bC5
