@@ -3,6 +3,9 @@ pragma solidity ^0.8.24;
 
 import { Raffle } from "./Raffle.sol";
 
+/// @title RaffleFactory
+/// @notice Factory contract for deploying individual Raffle contracts
+/// @dev Each raffle is a separate contract with its own lifecycle
 contract RaffleFactory {
     // -------------------------
     // Admin
@@ -75,6 +78,8 @@ contract RaffleFactory {
     // -------------------------
     // Views
     // -------------------------
+    
+    /// @notice Returns total number of raffles created
     function rafflesCount() external view returns (uint256) {
         return raffles.length;
     }
@@ -82,6 +87,14 @@ contract RaffleFactory {
     // -------------------------
     // Core logic
     // -------------------------
+    
+    /// @notice Create a new raffle
+    /// @param endTime Unix timestamp when raffle closes
+    /// @param ticketPrice Price per ticket in USDC smallest units
+    /// @param maxTickets Maximum tickets available
+    /// @param feeBps Fee in basis points (100 = 1%)
+    /// @param feeRecipient Address to receive fees
+    /// @return raffleAddr Address of deployed raffle contract
     function createRaffle(
         uint256 endTime,
         uint256 ticketPrice,
@@ -128,6 +141,9 @@ contract RaffleFactory {
     // -------------------------
     // Admin controls
     // -------------------------
+    
+    /// @notice Schedule a new randomness provider (time-locked)
+    /// @param newProvider Address of new VRF provider
     function setRandomnessProvider(address newProvider) external {
         if (msg.sender != admin) revert Unauthorized();
         if (newProvider == address(0)) revert InvalidAddress();
@@ -138,6 +154,7 @@ contract RaffleFactory {
         emit RandomnessProviderUpdateScheduled(newProvider, block.timestamp + PROVIDER_UPDATE_DELAY);
     }
 
+    /// @notice Apply pending randomness provider after delay
     function applyRandomnessProvider() external {
         if (msg.sender != admin) revert Unauthorized();
         address pendingProvider = pendingRandomnessProvider;
@@ -152,6 +169,8 @@ contract RaffleFactory {
         emit RandomnessProviderUpdated(previousProvider, pendingProvider);
     }
 
+    /// @notice Update maximum fee basis points allowed for new raffles
+    /// @param newMaxFeeBps New maximum (cannot exceed 2000 = 20%)
     function setMaxFeeBps(uint16 newMaxFeeBps) external {
         if (msg.sender != admin) revert Unauthorized();
         if (newMaxFeeBps > 2000) revert InvalidParams();
