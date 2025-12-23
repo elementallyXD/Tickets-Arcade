@@ -44,9 +44,9 @@ const MAX_PAGE_LIMIT: i64 = 100;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/raffles", get(list_raffles))
-        .route("/raffles/{raffle_id}", get(get_raffle_by_id))
-        .route("/raffles/{raffle_id}/purchases", get(list_purchases))
-        .route("/raffles/{raffle_id}/proof", get(get_raffle_proof))
+        .route("/raffles/:raffle_id", get(get_raffle_by_id))
+        .route("/raffles/:raffle_id/purchases", get(list_purchases))
+        .route("/raffles/:raffle_id/proof", get(get_raffle_proof))
 }
 
 // ============================================================================
