@@ -75,15 +75,23 @@ The server starts on `BIND_ADDR` (default `0.0.0.0:8080`) and automatically begi
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | ✅ | - | PostgreSQL connection string |
-| `RPC_URL` | ✅ | - | Arc L1 RPC endpoint |
-| `CHAIN_ID` | ✅ | - | Chain ID (Arc testnet: `5042002`) |
-| `START_BLOCK` | ✅ | - | Block to start indexing from |
 | `RAFFLE_FACTORY_ADDRESS` | ✅ | - | RaffleFactory contract address |
-| `RANDOMNESS_PROVIDER_ADDRESS` | ✅ | - | RandomnessProvider contract address |
-| `EXPLORER_BASE_URL` | ❌ | - | Block explorer base URL for tx links |
+| `RPC_URL` | ❌ | `https://rpc.testnet.arc.network` | Arc L1 RPC endpoint |
+| `CHAIN_ID` | ❌ | `5042002` | Chain ID (Arc testnet) |
+| `START_BLOCK` | ❌ | `0` | Block to start indexing from |
+| `RANDOMNESS_PROVIDER_ADDRESS` | ❌ | - | DrandRandomnessProvider contract address |
+| `EXPLORER_BASE_URL` | ❌ | `https://testnet.arcscan.app` | Block explorer base URL for tx links |
 | `BIND_ADDR` | ❌ | `0.0.0.0:8080` | Address to bind the HTTP server |
-| `INDEXER_BATCH_SIZE` | ❌ | `500` | Max blocks per RPC query |
+| `INDEXER_BATCH_SIZE` | ❌ | `2000` | Max blocks per RPC query |
 | `INDEXER_POLL_INTERVAL_MS` | ❌ | `3000` | Polling interval in milliseconds |
+
+### Randomness Provider Configuration
+
+When `RANDOMNESS_PROVIDER_ADDRESS` is set, the indexer will:
+1. Load the DrandRandomnessProvider ABI from `contracts/artifacts/contracts/DrandRandomnessProvider.sol/DrandRandomnessProvider.json`
+2. Index `RandomnessRequested` and `RandomnessDelivered` events
+3. Store requests/fulfillments in separate tables
+4. Link provider data back to raffles via `provider_request_id`, `provider_request_tx`, `provider_fulfill_tx`, and `proof_data` columns
 
 ### Security Notes
 
@@ -106,7 +114,7 @@ GET /v1/raffles?limit=50&offset=0&status=ACTIVE
 Query parameters:
 - `limit` (optional, max 100, default 50)
 - `offset` (optional, default 0)
-- `status` (optional): `OPEN`, `ACTIVE`, `DRAWING`, `DRAWN`, `COMPLETED`, `REFUNDING`, `REFUNDED`
+- `status` (optional): `ACTIVE`, `CLOSED`, `RANDOM_REQUESTED`, `RANDOM_FULFILLED`, `FINALIZED`, `REFUNDING`
 
 ### Get Raffle Details
 ```
@@ -123,9 +131,44 @@ Returns all ticket purchase events with ranges.
 ```
 GET /v1/raffles/{raffle_id}/proof
 ```
-Returns the cryptographic verification proof for drawn raffles.
+Returns the cryptographic verification proof for drawn raffles. Includes:
+- Randomness value
+- Winning index and winner address
+- Transaction links for request, randomness, and finalization
+- **Provider data**: `provider_request_id`, `provider_request_tx`, `provider_fulfill_tx`, `proof_data` (when DrandRandomnessProvider is configured)
+
+### List Randomness Requests
+```
+GET /v1/randomness/requests?limit=50&offset=0&raffle_address=0x...&raffle_id=1
+```
+Query parameters:
+- `limit` (optional, max 100, default 50)
+- `offset` (optional, default 0)
+- `raffle_address` (optional): Filter by raffle contract address
+- `raffle_id` (optional): Filter by raffle ID
+
+Returns all `RandomnessRequested` events from the DrandRandomnessProvider.
+
+### Get Randomness Request by ID
+```
+GET /v1/randomness/requests/{request_id}
+```
+Returns a specific randomness request by its provider request ID.
+
+### List Randomness Fulfillments
+```
+GET /v1/randomness/fulfillments?limit=50&offset=0&raffle_address=0x...
+```
+Query parameters:
+- `limit` (optional, max 100, default 50)
+- `offset` (optional, default 0)
+- `raffle_address` (optional): Filter by raffle contract address
+
+Returns all `RandomnessDelivered` events from the DrandRandomnessProvider, including proof data.
 
 ## Development
+
+See [TESTING.md](./TESTING.md) for detailed testing and debugging instructions.
 
 ### Running Tests
 ```bash
@@ -179,8 +222,10 @@ Reduce `INDEXER_BATCH_SIZE` to process fewer blocks per query.
 ## Database Schema
 
 Key tables:
-- `raffles` - Raffle metadata and status
-- `raffle_purchases` - Individual ticket purchases with ranges
+- `raffles` - Raffle metadata, status, and provider linkage (`provider_request_id`, `provider_request_tx`, `provider_fulfill_tx`, `proof_data`)
+- `purchases` - Individual ticket purchases with ranges
+- `randomness_requests` - DrandRandomnessProvider `RandomnessRequested` events
+- `randomness_fulfillments` - DrandRandomnessProvider `RandomnessDelivered` events with proof data
 - `indexer_state` - Last processed block for resumable indexing
 
 ## Security

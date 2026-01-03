@@ -24,11 +24,18 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
 /// Path to RaffleFactory ABI artifact (relative to crate root)
 const FACTORY_ARTIFACT_PATH: &str =
     "../contracts/artifacts/contracts/RaffleFactory.sol/RaffleFactory.json";
 /// Path to Raffle ABI artifact (relative to crate root)
 const RAFFLE_ARTIFACT_PATH: &str = "../contracts/artifacts/contracts/Raffle.sol/Raffle.json";
+/// Path to DrandRandomnessProvider ABI artifact (relative to crate root)
+const DRAND_PROVIDER_ARTIFACT_PATH: &str =
+    "../contracts/artifacts/contracts/DrandRandomnessProvider.sol/DrandRandomnessProvider.json";
 
 /// Timeout for individual RPC calls (prevents hanging on unresponsive nodes)
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -39,9 +46,16 @@ const MAX_ADDRESSES_PER_QUERY: usize = 100;
 /// Backoff sleep duration when RPC errors occur
 const ERROR_BACKOFF: Duration = Duration::from_secs(5);
 
+// ============================================================================
+// TYPES
+// ============================================================================
+
+/// Enumeration of all indexed event types
 #[derive(Clone, Copy, Debug)]
 enum EventKind {
+    // Factory events
     RaffleCreated,
+    // Raffle events
     TicketsBought,
     RaffleClosed,
     RandomnessRequested,
@@ -51,6 +65,9 @@ enum EventKind {
     KeeperUpdated,
     RefundsStarted,
     PayoutsCompleted,
+    // DrandRandomnessProvider events
+    ProviderRandomnessRequested,
+    ProviderRandomnessDelivered,
 }
 
 /// Event definition combining kind with ABI for decoding
@@ -59,6 +76,10 @@ struct EventDef {
     kind: EventKind,
     event: Event,
 }
+
+// ============================================================================
+// MAIN ENTRY POINT
+// ============================================================================
 
 /// Main indexer loop - runs indefinitely, polling for new blocks
 ///
@@ -92,14 +113,29 @@ pub async fn run(db_pool: PgPool, config: AppConfig) -> anyhow::Result<()> {
     let factory_abi =
         load_abi(FACTORY_ARTIFACT_PATH).context("failed to load RaffleFactory ABI")?;
     let raffle_abi = load_abi(RAFFLE_ARTIFACT_PATH).context("failed to load Raffle ABI")?;
-    let events_by_signature = build_event_map(&factory_abi, &raffle_abi)?;
+    let provider_abi = match config.randomness_provider_address.as_ref() {
+        Some(_) => Some(
+            load_abi(DRAND_PROVIDER_ARTIFACT_PATH)
+                .context("failed to load DrandRandomnessProvider ABI")?,
+        ),
+        None => load_abi(DRAND_PROVIDER_ARTIFACT_PATH).ok(), // Optional when provider disabled
+    };
+
+    let events_by_signature = build_event_map(&factory_abi, &raffle_abi, provider_abi.as_ref())?;
     let factory_address = Address::from_str(&config.raffle_factory_address)
         .context("invalid factory address format")?;
+
+    // Parse optional randomness provider address
+    let provider_address = config
+        .randomness_provider_address
+        .as_ref()
+        .and_then(|addr| Address::from_str(addr).ok());
 
     tracing::info!(
         start_block = config.start_block,
         batch_size = config.indexer_batch_size,
         factory = %factory_address,
+        provider = ?provider_address,
         "indexer started"
     );
 
@@ -111,6 +147,7 @@ pub async fn run(db_pool: PgPool, config: AppConfig) -> anyhow::Result<()> {
             &provider,
             &events_by_signature,
             factory_address,
+            provider_address,
         )
         .await
         {
@@ -131,6 +168,7 @@ async fn run_indexing_cycle(
     provider: &Provider<Http>,
     events_by_signature: &HashMap<H256, EventDef>,
     factory_address: Address,
+    provider_address: Option<Address>,
 ) -> anyhow::Result<()> {
     // Get latest block with timeout
     let latest = tokio::time::timeout(RPC_TIMEOUT, provider.get_block_number())
@@ -175,7 +213,25 @@ async fn run_indexing_cycle(
         }
     }
 
-    // 2. Load known raffle addresses and fetch their events
+    // 2. Fetch and process randomness provider events (if configured)
+    if let Some(prov_addr) = provider_address {
+        let provider_logs =
+            fetch_logs_with_timeout(provider, vec![prov_addr], from_block, to_block)
+                .await
+                .context("failed to fetch provider logs")?;
+
+        for log_entry in &provider_logs {
+            if let Err(err) = process_log(db_pool, events_by_signature, log_entry).await {
+                tracing::warn!(
+                    tx_hash = ?log_entry.transaction_hash,
+                    error = %err,
+                    "failed to process provider log, skipping"
+                );
+            }
+        }
+    }
+
+    // 3. Load known raffle addresses and fetch their events
     let raffle_addresses = load_raffle_addresses(db_pool).await?;
     if !raffle_addresses.is_empty() {
         // Process in chunks to prevent DoS via unbounded queries
@@ -197,7 +253,7 @@ async fn run_indexing_cycle(
         }
     }
 
-    // 3. Update last processed block
+    // 4. Update last processed block
     set_last_processed_block(db_pool, to_block).await?;
     Ok(())
 }
@@ -254,7 +310,11 @@ fn load_abi(relative_path: &str) -> anyhow::Result<Abi> {
 }
 
 /// Builds a lookup map from event signature (topic0) to event definition
-fn build_event_map(factory_abi: &Abi, raffle_abi: &Abi) -> anyhow::Result<HashMap<H256, EventDef>> {
+fn build_event_map(
+    factory_abi: &Abi,
+    raffle_abi: &Abi,
+    provider_abi: Option<&Abi>,
+) -> anyhow::Result<HashMap<H256, EventDef>> {
     let mut map = HashMap::new();
 
     // Factory events
@@ -311,6 +371,16 @@ fn build_event_map(factory_abi: &Abi, raffle_abi: &Abi) -> anyhow::Result<HashMa
         raffle_abi.event("PayoutsCompleted")?,
     );
 
+    // DrandRandomnessProvider events (optional)
+    if let Some(prov_abi) = provider_abi {
+        if let Ok(event) = prov_abi.event("RandomnessRequested") {
+            register_event(&mut map, EventKind::ProviderRandomnessRequested, event);
+        }
+        if let Ok(event) = prov_abi.event("RandomnessDelivered") {
+            register_event(&mut map, EventKind::ProviderRandomnessDelivered, event);
+        }
+    }
+
     Ok(map)
 }
 
@@ -323,6 +393,10 @@ fn register_event(map: &mut HashMap<H256, EventDef>, kind: EventKind, event: &Ev
         },
     );
 }
+
+// ============================================================================
+// EVENT PROCESSING
+// ============================================================================
 
 /// Processes a single log entry and updates the database
 ///
@@ -599,6 +673,92 @@ async fn process_log(
         }
         // Events we log but don't need to store derived state for
         EventKind::KeeperUpdated | EventKind::PayoutsCompleted => {}
+
+        // DrandRandomnessProvider: RandomnessRequested(uint256 indexed requestId, uint256 indexed raffleId, address indexed raffle)
+        EventKind::ProviderRandomnessRequested => {
+            let request_id = token_u256(&parsed, "requestId")?;
+            let raffle_id = token_u256(&parsed, "raffleId")?;
+            let raffle_address = token_address(&parsed, "raffle")?;
+
+            // Insert into randomness_requests table
+            sqlx::query(
+                "INSERT INTO randomness_requests
+                (request_id, raffle_id, raffle_address, provider_address, tx_hash, log_index, block_number)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (tx_hash, log_index) DO NOTHING",
+            )
+            .bind(request_id.to_string())
+            .bind(u256_to_i64(raffle_id).ok())  // May be too large
+            .bind(format!("{:#x}", raffle_address))
+            .bind(&address_hex)  // provider address is the log emitter
+            .bind(&tx_hash_hex)
+            .bind(log_index.as_u64() as i64)
+            .bind(block_number.as_u64() as i64)
+            .execute(&mut *db_tx)
+            .await
+            .context("failed to insert randomness request")?;
+
+            // Update raffle with provider request info
+            if let Ok(raffle_id_i64) = u256_to_i64(raffle_id) {
+                sqlx::query(
+                    "UPDATE raffles
+                    SET provider_request_id = $1,
+                        provider_request_tx = $2,
+                        updated_at = now()
+                    WHERE raffle_id = $3",
+                )
+                .bind(request_id.to_string())
+                .bind(&tx_hash_hex)
+                .bind(raffle_id_i64)
+                .execute(&mut *db_tx)
+                .await
+                .context("failed to update raffle with provider request")?;
+            }
+        }
+
+        // DrandRandomnessProvider: RandomnessDelivered(uint256 indexed requestId, uint256 randomness, bytes proof, address indexed raffle)
+        EventKind::ProviderRandomnessDelivered => {
+            let request_id = token_u256(&parsed, "requestId")?;
+            let randomness = token_u256(&parsed, "randomness")?;
+            let raffle_address = token_address(&parsed, "raffle")?;
+            let proof = extract_bytes(&parsed, "proof").ok();
+
+            let proof_hex = proof.map(|p| format!("0x{}", hex::encode(p)));
+
+            // Insert into randomness_fulfillments table
+            sqlx::query(
+                "INSERT INTO randomness_fulfillments
+                (request_id, randomness, proof, raffle_address, provider_address, tx_hash, log_index, block_number)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (tx_hash, log_index) DO NOTHING",
+            )
+            .bind(request_id.to_string())
+            .bind(randomness.to_string())
+            .bind(&proof_hex)
+            .bind(format!("{:#x}", raffle_address))
+            .bind(&address_hex)  // provider address is the log emitter
+            .bind(&tx_hash_hex)
+            .bind(log_index.as_u64() as i64)
+            .bind(block_number.as_u64() as i64)
+            .execute(&mut *db_tx)
+            .await
+            .context("failed to insert randomness fulfillment")?;
+
+            // Update raffle with provider fulfillment info (find by raffle_address)
+            sqlx::query(
+                "UPDATE raffles
+                SET provider_fulfill_tx = $1,
+                    proof_data = $2,
+                    updated_at = now()
+                WHERE raffle_address = $3",
+            )
+            .bind(&tx_hash_hex)
+            .bind(&proof_hex)
+            .bind(format!("{:#x}", raffle_address))
+            .execute(&mut *db_tx)
+            .await
+            .context("failed to update raffle with provider fulfillment")?;
+        }
     }
 
     db_tx
@@ -642,11 +802,28 @@ fn extract_address(parsed: &ethers::abi::Log, name: &str) -> anyhow::Result<Addr
     }
 }
 
-// Backward compatibility aliases - will remove after updating all callers
+/// Extracts bytes data from a parsed event log
+fn extract_bytes(parsed: &ethers::abi::Log, name: &str) -> anyhow::Result<Vec<u8>> {
+    let token = parsed
+        .params
+        .iter()
+        .find(|param| param.name == name)
+        .map(|param| &param.value)
+        .ok_or_else(|| anyhow!("missing event parameter: {}", name))?;
+
+    match token {
+        Token::Bytes(value) => Ok(value.clone()),
+        _ => Err(anyhow!("event parameter '{}' is not bytes", name)),
+    }
+}
+
+// Convenience aliases for more descriptive naming at call sites
+#[inline]
 fn token_u256(parsed: &ethers::abi::Log, name: &str) -> anyhow::Result<U256> {
     extract_u256(parsed, name)
 }
 
+#[inline]
 fn token_address(parsed: &ethers::abi::Log, name: &str) -> anyhow::Result<Address> {
     extract_address(parsed, name)
 }

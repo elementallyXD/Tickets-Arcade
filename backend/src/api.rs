@@ -8,6 +8,9 @@
 //! - `GET /v1/raffles/:raffle_id` - Get raffle details
 //! - `GET /v1/raffles/:raffle_id/purchases` - Get ticket purchase ranges
 //! - `GET /v1/raffles/:raffle_id/proof` - Get verification proof data
+//! - `GET /v1/randomness/requests` - List randomness requests (with optional filters)
+//! - `GET /v1/randomness/requests/:request_id` - Get randomness request details
+//! - `GET /v1/randomness/fulfillments` - List randomness fulfillments
 //!
 //! # Security Considerations
 //! - All queries use parameterized SQL (no injection risk)
@@ -40,13 +43,24 @@ const MAX_PAGE_LIMIT: i64 = 100;
 // ROUTER
 // ============================================================================
 
-/// Creates the v1 API router with all raffle endpoints
+/// Creates the v1 API router with all raffle and randomness endpoints
 pub fn router() -> Router<AppState> {
     Router::new()
+        // Raffle endpoints
         .route("/raffles", get(list_raffles))
         .route("/raffles/:raffle_id", get(get_raffle_by_id))
         .route("/raffles/:raffle_id/purchases", get(list_purchases))
         .route("/raffles/:raffle_id/proof", get(get_raffle_proof))
+        // Randomness provider endpoints
+        .route("/randomness/requests", get(list_randomness_requests))
+        .route(
+            "/randomness/requests/:request_id",
+            get(get_randomness_request),
+        )
+        .route(
+            "/randomness/fulfillments",
+            get(list_randomness_fulfillments),
+        )
 }
 
 // ============================================================================
@@ -132,18 +146,70 @@ struct TxLinks {
     randomness_url: Option<String>,
     finalized_tx: Option<String>,
     finalized_url: Option<String>,
+    /// Provider-level request transaction
+    provider_request_tx: Option<String>,
+    provider_request_url: Option<String>,
+    /// Provider-level fulfillment transaction  
+    provider_fulfill_tx: Option<String>,
+    provider_fulfill_url: Option<String>,
 }
 
 #[derive(Serialize)]
 struct ProofResponse {
     raffle_id: i64,
+    raffle_address: String,
+    /// Raffle's request_id (from Raffle contract)
     request_id: Option<String>,
+    /// Provider's request_id (from DrandRandomnessProvider)
+    provider_request_id: Option<String>,
     randomness: Option<String>,
+    /// Proof data from DrandRandomnessProvider (hex-encoded)
+    proof_data: Option<String>,
     total_tickets: i64,
     winning_index: Option<i64>,
     winner: Option<String>,
     winning_range: Option<WinningRange>,
     txs: TxLinks,
+}
+
+/// Randomness request from DrandRandomnessProvider
+#[derive(Serialize)]
+struct RandomnessRequestResponse {
+    id: i64,
+    request_id: String,
+    raffle_id: Option<i64>,
+    raffle_address: String,
+    provider_address: String,
+    tx_hash: String,
+    tx_url: Option<String>,
+    log_index: i64,
+    block_number: i64,
+    created_at: DateTime<Utc>,
+}
+
+/// Randomness fulfillment from DrandRandomnessProvider  
+#[derive(Serialize)]
+struct RandomnessFulfillmentResponse {
+    id: i64,
+    request_id: String,
+    randomness: String,
+    proof: Option<String>,
+    raffle_address: String,
+    provider_address: String,
+    tx_hash: String,
+    tx_url: Option<String>,
+    log_index: i64,
+    block_number: i64,
+    created_at: DateTime<Utc>,
+}
+
+/// Query parameters for randomness requests
+#[derive(Deserialize)]
+struct RandomnessRequestQuery {
+    limit: Option<i64>,
+    offset: Option<i64>,
+    raffle_address: Option<String>,
+    raffle_id: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -368,8 +434,9 @@ async fn get_raffle_proof(
     Path(raffle_id): Path<i64>,
 ) -> Result<Json<ProofResponse>, ApiError> {
     let raffle_row = sqlx::query(
-        "SELECT raffle_id, request_id, request_tx, randomness, randomness_tx,
-            winning_index, winner, total_tickets, finalized_tx
+        "SELECT raffle_id, raffle_address, request_id, request_tx, randomness, randomness_tx,
+            winning_index, winner, total_tickets, finalized_tx,
+            provider_request_id, provider_request_tx, provider_fulfill_tx, proof_data
          FROM raffles
          WHERE raffle_id = $1",
     )
@@ -382,6 +449,9 @@ async fn get_raffle_proof(
         return Err(ApiError::not_found("raffle not found"));
     };
 
+    let raffle_address: String = row
+        .try_get("raffle_address")
+        .map_err(row_error_to_api_error)?;
     let request_id: Option<String> = row.try_get("request_id").map_err(row_error_to_api_error)?;
     let request_tx: Option<String> = row.try_get("request_tx").map_err(row_error_to_api_error)?;
     let randomness: Option<String> = row.try_get("randomness").map_err(row_error_to_api_error)?;
@@ -398,6 +468,18 @@ async fn get_raffle_proof(
     let mut winning_index: Option<i64> = row
         .try_get("winning_index")
         .map_err(row_error_to_api_error)?;
+
+    // Provider-level fields
+    let provider_request_id: Option<String> = row
+        .try_get("provider_request_id")
+        .map_err(row_error_to_api_error)?;
+    let provider_request_tx: Option<String> = row
+        .try_get("provider_request_tx")
+        .map_err(row_error_to_api_error)?;
+    let provider_fulfill_tx: Option<String> = row
+        .try_get("provider_fulfill_tx")
+        .map_err(row_error_to_api_error)?;
+    let proof_data: Option<String> = row.try_get("proof_data").map_err(row_error_to_api_error)?;
 
     // If the winning index was not stored, recompute it from randomness.
     // This allows clients to verify: winningIndex = randomness % totalTickets
@@ -441,18 +523,211 @@ async fn get_raffle_proof(
         randomness_url: build_tx_url(&state.config.explorer_base_url, &randomness_tx),
         finalized_tx: finalized_tx.clone(),
         finalized_url: build_tx_url(&state.config.explorer_base_url, &finalized_tx),
+        provider_request_tx: provider_request_tx.clone(),
+        provider_request_url: build_tx_url(&state.config.explorer_base_url, &provider_request_tx),
+        provider_fulfill_tx: provider_fulfill_tx.clone(),
+        provider_fulfill_url: build_tx_url(&state.config.explorer_base_url, &provider_fulfill_tx),
     };
 
     Ok(Json(ProofResponse {
         raffle_id: row.try_get("raffle_id").map_err(row_error_to_api_error)?,
+        raffle_address,
         request_id,
+        provider_request_id,
         randomness,
+        proof_data,
         total_tickets,
         winning_index,
         winner,
         winning_range,
         txs,
     }))
+}
+
+/// GET /v1/randomness/requests - List randomness requests from DrandRandomnessProvider
+async fn list_randomness_requests(
+    State(state): State<AppState>,
+    Query(params): Query<RandomnessRequestQuery>,
+) -> Result<Json<Vec<RandomnessRequestResponse>>, ApiError> {
+    let limit = normalize_limit(params.limit)?;
+    let offset = normalize_offset(params.offset)?;
+
+    let rows = if let Some(raffle_addr) = params.raffle_address {
+        sqlx::query(
+            "SELECT id, request_id::text AS request_id, raffle_id, raffle_address,
+                provider_address, tx_hash, log_index, block_number, created_at
+             FROM randomness_requests
+             WHERE LOWER(raffle_address) = LOWER($1)
+             ORDER BY id DESC
+             LIMIT $2 OFFSET $3",
+        )
+        .bind(raffle_addr)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_error_to_api_error)?
+    } else if let Some(raffle_id) = params.raffle_id {
+        sqlx::query(
+            "SELECT id, request_id::text AS request_id, raffle_id, raffle_address,
+                provider_address, tx_hash, log_index, block_number, created_at
+             FROM randomness_requests
+             WHERE raffle_id = $1
+             ORDER BY id DESC
+             LIMIT $2 OFFSET $3",
+        )
+        .bind(raffle_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_error_to_api_error)?
+    } else {
+        sqlx::query(
+            "SELECT id, request_id::text AS request_id, raffle_id, raffle_address,
+                provider_address, tx_hash, log_index, block_number, created_at
+             FROM randomness_requests
+             ORDER BY id DESC
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_error_to_api_error)?
+    };
+
+    let mut requests = Vec::with_capacity(rows.len());
+    for row in rows {
+        let tx_hash: String = row.try_get("tx_hash").map_err(row_error_to_api_error)?;
+        requests.push(RandomnessRequestResponse {
+            id: row.try_get("id").map_err(row_error_to_api_error)?,
+            request_id: row.try_get("request_id").map_err(row_error_to_api_error)?,
+            raffle_id: row.try_get("raffle_id").map_err(row_error_to_api_error)?,
+            raffle_address: row
+                .try_get("raffle_address")
+                .map_err(row_error_to_api_error)?,
+            provider_address: row
+                .try_get("provider_address")
+                .map_err(row_error_to_api_error)?,
+            tx_hash: tx_hash.clone(),
+            tx_url: build_tx_url(&state.config.explorer_base_url, &Some(tx_hash)),
+            log_index: row.try_get("log_index").map_err(row_error_to_api_error)?,
+            block_number: row
+                .try_get("block_number")
+                .map_err(row_error_to_api_error)?,
+            created_at: row.try_get("created_at").map_err(row_error_to_api_error)?,
+        });
+    }
+
+    Ok(Json(requests))
+}
+
+/// GET /v1/randomness/requests/:request_id - Get a specific randomness request
+async fn get_randomness_request(
+    State(state): State<AppState>,
+    Path(request_id): Path<String>,
+) -> Result<Json<RandomnessRequestResponse>, ApiError> {
+    let row = sqlx::query(
+        "SELECT id, request_id::text AS request_id, raffle_id, raffle_address,
+            provider_address, tx_hash, log_index, block_number, created_at
+         FROM randomness_requests
+         WHERE request_id::text = $1
+         LIMIT 1",
+    )
+    .bind(&request_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(db_error_to_api_error)?;
+
+    let Some(row) = row else {
+        return Err(ApiError::not_found("randomness request not found"));
+    };
+
+    let tx_hash: String = row.try_get("tx_hash").map_err(row_error_to_api_error)?;
+    Ok(Json(RandomnessRequestResponse {
+        id: row.try_get("id").map_err(row_error_to_api_error)?,
+        request_id: row.try_get("request_id").map_err(row_error_to_api_error)?,
+        raffle_id: row.try_get("raffle_id").map_err(row_error_to_api_error)?,
+        raffle_address: row
+            .try_get("raffle_address")
+            .map_err(row_error_to_api_error)?,
+        provider_address: row
+            .try_get("provider_address")
+            .map_err(row_error_to_api_error)?,
+        tx_hash: tx_hash.clone(),
+        tx_url: build_tx_url(&state.config.explorer_base_url, &Some(tx_hash)),
+        log_index: row.try_get("log_index").map_err(row_error_to_api_error)?,
+        block_number: row
+            .try_get("block_number")
+            .map_err(row_error_to_api_error)?,
+        created_at: row.try_get("created_at").map_err(row_error_to_api_error)?,
+    }))
+}
+
+/// GET /v1/randomness/fulfillments - List randomness fulfillments from DrandRandomnessProvider
+async fn list_randomness_fulfillments(
+    State(state): State<AppState>,
+    Query(params): Query<RandomnessRequestQuery>,
+) -> Result<Json<Vec<RandomnessFulfillmentResponse>>, ApiError> {
+    let limit = normalize_limit(params.limit)?;
+    let offset = normalize_offset(params.offset)?;
+
+    let rows = if let Some(raffle_addr) = params.raffle_address {
+        sqlx::query(
+            "SELECT id, request_id::text AS request_id, randomness::text AS randomness,
+                proof, raffle_address, provider_address, tx_hash, log_index, block_number, created_at
+             FROM randomness_fulfillments
+             WHERE LOWER(raffle_address) = LOWER($1)
+             ORDER BY id DESC
+             LIMIT $2 OFFSET $3",
+        )
+        .bind(raffle_addr)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_error_to_api_error)?
+    } else {
+        sqlx::query(
+            "SELECT id, request_id::text AS request_id, randomness::text AS randomness,
+                proof, raffle_address, provider_address, tx_hash, log_index, block_number, created_at
+             FROM randomness_fulfillments
+             ORDER BY id DESC
+             LIMIT $1 OFFSET $2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&state.db)
+        .await
+        .map_err(db_error_to_api_error)?
+    };
+
+    let mut fulfillments = Vec::with_capacity(rows.len());
+    for row in rows {
+        let tx_hash: String = row.try_get("tx_hash").map_err(row_error_to_api_error)?;
+        fulfillments.push(RandomnessFulfillmentResponse {
+            id: row.try_get("id").map_err(row_error_to_api_error)?,
+            request_id: row.try_get("request_id").map_err(row_error_to_api_error)?,
+            randomness: row.try_get("randomness").map_err(row_error_to_api_error)?,
+            proof: row.try_get("proof").map_err(row_error_to_api_error)?,
+            raffle_address: row
+                .try_get("raffle_address")
+                .map_err(row_error_to_api_error)?,
+            provider_address: row
+                .try_get("provider_address")
+                .map_err(row_error_to_api_error)?,
+            tx_hash: tx_hash.clone(),
+            tx_url: build_tx_url(&state.config.explorer_base_url, &Some(tx_hash)),
+            log_index: row.try_get("log_index").map_err(row_error_to_api_error)?,
+            block_number: row
+                .try_get("block_number")
+                .map_err(row_error_to_api_error)?,
+            created_at: row.try_get("created_at").map_err(row_error_to_api_error)?,
+        });
+    }
+
+    Ok(Json(fulfillments))
 }
 
 // ============================================================================
