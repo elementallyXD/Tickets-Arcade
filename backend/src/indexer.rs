@@ -113,7 +113,13 @@ pub async fn run(db_pool: PgPool, config: AppConfig) -> anyhow::Result<()> {
     let factory_abi =
         load_abi(FACTORY_ARTIFACT_PATH).context("failed to load RaffleFactory ABI")?;
     let raffle_abi = load_abi(RAFFLE_ARTIFACT_PATH).context("failed to load Raffle ABI")?;
-    let provider_abi = load_abi(DRAND_PROVIDER_ARTIFACT_PATH).ok(); // Optional - may not exist yet
+    let provider_abi = match config.randomness_provider_address.as_ref() {
+        Some(_) => Some(
+            load_abi(DRAND_PROVIDER_ARTIFACT_PATH)
+                .context("failed to load DrandRandomnessProvider ABI")?,
+        ),
+        None => load_abi(DRAND_PROVIDER_ARTIFACT_PATH).ok(), // Optional when provider disabled
+    };
 
     let events_by_signature = build_event_map(&factory_abi, &raffle_abi, provider_abi.as_ref())?;
     let factory_address = Address::from_str(&config.raffle_factory_address)
