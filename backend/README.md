@@ -30,7 +30,7 @@ This backend:
 
 ## Prerequisites
 
-- **Rust** (2024 edition, 1.75+)
+- **Rust** (2024 edition, 1.84+)
 - **Docker Desktop** (for local Postgres)
 - **sqlx-cli** (for migrations)
 
@@ -230,14 +230,16 @@ Key tables:
 
 ## Security
 
-See [SECURITY_REVIEW_BACKEND.md](./SECURITY_REVIEW_BACKEND.md) for detailed security analysis and mitigations.
+Security protections in the backend:
 
-Key protections:
-- All SQL queries use parameterized statements (no SQL injection)
-- Pagination enforced with MAX_PAGE_LIMIT = 100
-- RPC calls have 30-second timeouts
-- Database errors are logged but not exposed to clients
-- Graceful shutdown on SIGTERM/Ctrl+C
+- **SQL Injection Prevention**: All queries use parameterized statements via sqlx
+- **Pagination Limits**: Enforced MAX_PAGE_LIMIT = 100 to prevent DoS
+- **RPC Timeouts**: 30-second timeout on blockchain calls
+- **Error Handling**: Database errors logged but not exposed to clients
+- **Graceful Shutdown**: Clean termination on SIGTERM/Ctrl+C
+- **Input Validation**: All addresses validated for proper Ethereum format
+
+For contract security, see [contracts/docs/SECURITY_MODEL.md](../contracts/docs/SECURITY_MODEL.md).
 
 ## License
 
