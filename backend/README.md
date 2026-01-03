@@ -30,7 +30,7 @@ This backend:
 
 ## Prerequisites
 
-- **Rust** (2024 edition, 1.75+)
+- **Rust** (2024 edition, 1.84+)
 - **Docker Desktop** (for local Postgres)
 - **sqlx-cli** (for migrations)
 
